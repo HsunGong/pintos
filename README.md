@@ -1,4 +1,5 @@
 # Pintos
+For Xun and Weibang and Zihan.
 Labs for undergraduate OS class (600.318) at Johns Hopkins. [Pintos](http://pintos-os.org) 
 is a teaching operating system for x86, challenging but not overwhelming, small
 but realistic enough to understand OS in depth (it can run x86 machine and simulators 
