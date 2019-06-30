@@ -2,9 +2,62 @@
 #include <debug.h>
 #include "devices/intq.h"
 #include "devices/serial.h"
+#include "lib/kernel/console.h"
 
 /* Stores keys from the keyboard and serial port. */
 static struct intq buffer;
+
+
+/* Read a line from the input buffer */
+void readline(char *str, int max_len)
+{
+  int len = 0;
+  while (true)
+  {
+    char ch = input_getc();
+    bool isEnd = false;
+
+    switch (ch)
+    {
+    case 0x09:
+    case 0x20:
+      putchar(ch);
+      str[len++] = ch;
+      break;
+
+    case 0x03:
+    case 0x04:
+    case 0x0D:
+      isEnd = true;
+      break;
+    
+    case 0x08:
+      if (len > 0)
+      {
+        putbuf("\b \b", 3);
+        str[--len] = '\0';
+        break;
+      }
+      __attribute__ ((fallthrough)); // C and C++03
+    
+    default:
+      if (ch >= 0x21 && ch <= 0x7E)
+      {
+        putchar(ch);
+        str[len++] = ch;
+      }
+    }
+
+    if (isEnd || len == max_len)
+    {
+      putchar('\n');
+      break;
+    }
+  }
+  
+  if (len < max_len)
+    str[len] = '\0';
+}
 
 /* Initializes the input buffer. */
 void input_init(void)

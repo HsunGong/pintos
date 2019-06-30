@@ -21,7 +21,7 @@ DSTDIR=$(cd $1 && pwd)
 cd /tmp
 mkdir $$
 cd $$
-wget https://sourceforge.net/projects/bochs/files/bochs/2.6.2/bochs-2.6.2.tar.gz/download -O bochs-2.6.2.tar.gz 
+cp /home/sjtu-ypm/system/pintos/src/misc/bochs-2.6.2.tar.gz ./
 tar xzf bochs-2.6.2.tar.gz
 cd bochs-2.6.2
 cat $CWD/bochs-2.6.2-jitter-plus-segv.patch | patch -p1
@@ -51,7 +51,10 @@ echo "Bochs plain successfully built"
 make install
 cd $WD
 mkdir with-dbg && cd with-dbg 
-../configure --enable-debugger --disable-debugger-gui $CFGOPTS && make -j8
+../configure --enable-disasm --enable-all-optimizations --enable-readline  --enable-debugger-gui --enable-x86-debugger --enable-a20-pin --enable-fast-function-calls --enable-debugger $CFGOPTS 
+pwd
+read -rsp $'Press enter to continue...\n'
+make -j8
 if [ $? -ne 0 ]; then
   echo "Error: build bochs-dbg failed"
   exit 1

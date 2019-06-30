@@ -9,4 +9,6 @@ void input_putc(uint8_t);
 uint8_t input_getc(void);
 bool input_full(void);
 
+void readline(char *, int);
+
 #endif /* devices/input.h */

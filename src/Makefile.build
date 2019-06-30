@@ -2,7 +2,7 @@
 
 SRCDIR = ../..
 
-all: kernel.bin loader.bin
+all: kernel.bin loader.bin runscript
 
 include ../../Make.config
 include ../Make.vars
@@ -21,6 +21,7 @@ threads_SRC += threads/intr-stubs.S	# Interrupt stubs.
 threads_SRC += threads/synch.c		# Synchronization.
 threads_SRC += threads/palloc.c		# Page allocator.
 threads_SRC += threads/malloc.c		# Subpage allocator.
+threads_SRC += threads/float32.c	# real number calculate
 
 # Device driver code.
 devices_SRC  = devices/pit.c		# Programmable interrupt timer chip.
@@ -62,7 +63,9 @@ userprog_SRC += userprog/gdt.c		# GDT initialization.
 userprog_SRC += userprog/tss.c		# TSS management.
 
 # No virtual memory code yet.
-#vm_SRC = vm/file.c			# Some file.
+vm_SRC = vm/frame.c    			# Frame table file.
+vm_SRC += vm/swap.c    			# Wwap handle file.
+vm_SRC += vm/page.c    			# Supplemental page table handle file.
 
 # Filesystem code.
 filesys_SRC  = filesys/filesys.c	# Filesystem core.
@@ -71,10 +74,17 @@ filesys_SRC += filesys/file.c		# Files.
 filesys_SRC += filesys/directory.c	# Directories.
 filesys_SRC += filesys/inode.c		# File headers.
 filesys_SRC += filesys/fsutil.c		# Utilities.
+filesys_SRC += filesys/cache.c		# Buffer Cache.
 
 SOURCES = $(foreach dir,$(KERNEL_SUBDIRS),$($(dir)_SRC))
 OBJECTS = $(patsubst %.c,%.o,$(patsubst %.S,%.o,$(SOURCES)))
 DEPENDS = $(patsubst %.o,%.d,$(OBJECTS))
+#$(warning   ----------------------------------------------------)
+#$(warning $(vm_SRC))
+#$(warning $(SOURCES))
+#$(warning $(OBJECTS))
+#$(warning $(DEPENDS))
+#$(warning   ----------------------------------------------------)
 
 GDBPORT := $(shell expr `id -u` % 5000 + 25000)
 IMAGE = kernel.img
@@ -123,7 +133,10 @@ qemu-nox: $(IMAGE)
 	@echo "*** its prefix key is Ctrl-a, press Ctrl-a twice and x to exit."
 	@echo "***"
 	$(QEMU) -nographic -drive file=$(IMAGE),index=0,media=disk,format=raw $(QEMUOPTS)
-
+	
+runscript:
+	cp ../../pintos.sh ./pintos.sh
+    
 clean::
 	rm -f $(OBJECTS) $(DEPENDS) 
 	rm -f threads/loader.o threads/kernel.lds.s threads/loader.d

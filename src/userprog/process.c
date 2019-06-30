@@ -25,22 +25,32 @@ static bool load(const char *cmdline, void (**eip)(void), void **esp);
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
-tid_t process_execute(const char *file_name)
+tid_t process_execute(const char *file_name_)
 {
   char *fn_copy;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
+  char *file_name = palloc_get_page(0);
+  strlcpy(file_name, file_name_, PGSIZE);
+
   fn_copy = palloc_get_page(0);
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy(fn_copy, file_name, PGSIZE);
 
+  char *save_ptr;
+  char *thread_name = strtok_r(file_name, " ", &save_ptr);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create(thread_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
+  palloc_free_page(file_name); /* this is part of pudding */
+
+  list_push_back(&thread_current()->child_list,
+                 &thread_get_child_message(tid)->elem);
   return tid;
 }
 
@@ -53,15 +63,65 @@ start_process(void *file_name_)
   struct intr_frame if_;
   bool success;
 
+  char *save_ptr;
+  char *text = strtok_r(file_name, " ", &save_ptr);
+
   /* Initialize interrupt frame and load executable. */
   memset(&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load(file_name, &if_.eip, &if_.esp);
+  success = load(text, &if_.eip, &if_.esp);
+  
+  if (success)
+  {
+#define MAX_ARGC 32
+    char *esp = if_.esp;
+    char *args[MAX_ARGC], *arg; /* Args is a stack.  */
+    int top = 0;
 
+    for (arg = text; arg != NULL; arg = strtok_r(NULL, " ", &save_ptr))
+    {
+      int l = strlen(arg);
+      esp -= l + 1;
+      strlcpy(esp, arg, l + 1);
+      args[top] = esp, top++;
+    }
+
+    while (((char *)if_.esp - esp) % 4 != 0)
+      esp--;
+    esp -= 4;
+    *((int *)esp) = 0; /* alignment */
+
+    int argc = top;
+    while (top > 0)
+    {
+      esp -= 4;
+      --top, *((char **)esp) = args[top];
+    }
+    char **argv = (char **)esp;
+
+    esp -= 4;
+    *((char ***)esp) = argv;
+    esp -= 4;
+    *((int *)esp) = argc;
+    esp -= 4;
+    *((int *)esp) = 0;
+
+    if_.esp = esp;
+#undef MAX_ARGC
+  }
+  
   /* If load failed, quit. */
   palloc_free_page(file_name);
+  if (!success)
+  {
+    thread_current()->message_to_grandpa->load_failed = true;
+    thread_current()->message_to_grandpa->return_value = -1;
+    thread_current()->return_value = -1;
+  }
+  sema_up(thread_current()->message_to_grandpa->sema_started);
+  
   if (!success)
     thread_exit();
 
@@ -89,6 +149,27 @@ start_process(void *file_name_)
    does nothing. */
 int process_wait(tid_t child_tid UNUSED)
 {
+  struct list_elem *e;
+  struct thread *cur = thread_current();
+  struct child_message *l;
+  
+  for (e = list_begin(&cur->child_list); e != list_end(&cur->child_list); e = list_next(e))
+  {
+    l = list_entry(e, struct child_message, elem);
+    if (l->tid == child_tid)
+    {
+      if (!l->terminated)
+      {
+        sema_down(l->sema_finished);
+      }
+      int ret = l->exited ? l->return_value : -1;
+      list_remove(e);
+      list_remove(&l->allelem);
+      palloc_free_page(l);
+      return ret;
+    }
+  }
+
   return -1;
 }
 
@@ -98,22 +179,35 @@ void process_exit(void)
   struct thread *cur = thread_current();
   uint32_t *pd;
 
+  struct list_elem *e;
+  struct child_message *l;
+  while (!list_empty(&cur->child_list))
+  {
+    l = list_entry(list_pop_front(&cur->child_list), struct child_message, elem);
+    list_remove(&l->allelem);
+    l->tchild->grandpa_died = true;
+    palloc_free_page(l);
+  }
+
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
   if (pd != NULL)
   {
     /* Correct ordering here is crucial.  We must set
-         cur->pagedir to NULL before switching page directories,
-         so that a timer interrupt can't switch back to the
-         process page directory.  We must activate the base page
-         directory before destroying the process's page
-         directory, or our active page directory will be one
-         that's been freed (and cleared). */
+       cur->pagedir to NULL before switching page directories,
+       so that a timer interrupt can't switch back to the
+       process page directory.  We must activate the base page
+       directory before destroying the process's page
+       directory, or our active page directory will be one
+       that's been freed (and cleared). */
     cur->pagedir = NULL;
     pagedir_activate(NULL);
     pagedir_destroy(pd);
+    printf("%s: exit(%d)\n", cur->name, cur->return_value);
   }
+  if (!cur->grandpa_died)
+    cur->message_to_grandpa->terminated = true;
 }
 
 /* Sets up the CPU for running user code in the current
@@ -271,14 +365,14 @@ bool load(const char *file_name, void (**eip)(void), void **esp)
         if (phdr.p_filesz > 0)
         {
           /* Normal segment.
-                     Read initial part from disk and zero the rest. */
+               Read initial part from disk and zero the rest. */
           read_bytes = page_offset + phdr.p_filesz;
           zero_bytes = (ROUND_UP(page_offset + phdr.p_memsz, PGSIZE) - read_bytes);
         }
         else
         {
           /* Entirely zero.
-                     Don't read anything from disk. */
+               Don't read anything from disk. */
           read_bytes = 0;
           zero_bytes = ROUND_UP(page_offset + phdr.p_memsz, PGSIZE);
         }
@@ -303,7 +397,12 @@ bool load(const char *file_name, void (**eip)(void), void **esp)
 
 done:
   /* We arrive here whether the load is successful or not. */
-  file_close(file);
+  if (success)
+  {
+    t->exec_file = file;
+    t->current_dir = get_file_dir(file);
+    file_deny_write(file);
+  }
   return success;
 }
 
@@ -382,8 +481,8 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
   while (read_bytes > 0 || zero_bytes > 0)
   {
     /* Calculate how to fill this page.
-         We will read PAGE_READ_BYTES bytes from FILE
-         and zero the final PAGE_ZERO_BYTES bytes. */
+       We will read PAGE_READ_BYTES bytes from FILE
+       and zero the final PAGE_ZERO_BYTES bytes. */
     size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
     size_t page_zero_bytes = PGSIZE - page_read_bytes;
 

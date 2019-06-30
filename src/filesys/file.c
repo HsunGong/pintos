@@ -9,6 +9,8 @@ struct file
   struct inode *inode; /* File's inode. */
   off_t pos;           /* Current position. */
   bool deny_write;     /* Has file_deny_write() been called? */
+
+  struct dir *dir; // for process loading
 };
 
 /* Opens a file for the given INODE, of which it takes ownership,
@@ -155,4 +157,15 @@ off_t file_tell(struct file *file)
 {
   ASSERT(file != NULL);
   return file->pos;
+}
+
+void set_file_dir(struct file *file, struct dir *dir)
+{
+  file->dir = dir;
+}
+
+struct dir *
+get_file_dir(struct file *file)
+{
+  return file->dir;
 }

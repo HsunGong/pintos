@@ -13,12 +13,23 @@
 #include "threads/vaddr.h"
 #ifdef USERPROG
 #include "userprog/process.h"
+#include "malloc.h"
 #endif
+#include "list.h"
+#include "filesys/filesys.h"
+#include "filesys/file.h"
+
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
+
+static struct list file_list;
+static struct list children;
+
+/* The average load of system */
+static struct float32 load_avg;
 
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
@@ -71,6 +82,31 @@ static void schedule(void);
 void thread_schedule_tail(struct thread *prev);
 static tid_t allocate_tid(void);
 
+
+
+
+
+static void thread_sleep_checker(struct thread *t, void *args UNUSED);
+static void thread_update_priority(struct thread *, void *);
+static void thread_ready_list_greater(void);
+
+static bool thread_priority_greater(const struct list_elem *a_, const struct list_elem *b_, void *aux UNUSED);
+static void thread_insert_ready_list(struct list_elem *elem);
+
+static void thread_update_load_avg(void);
+static void thread_update_recent_cpu(struct thread *, void *);
+static void thread_add_recent_cpu(void);
+
+
+
+
+
+
+
+
+
+
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -92,11 +128,19 @@ void thread_init(void)
   list_init(&ready_list);
   list_init(&all_list);
 
+
+  list_init(&children);
+  list_init(&file_list);
+
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread();
   init_thread(initial_thread, "main", PRI_DEFAULT);
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid();
+
+
+  /* Initializes the load average */
+  load_avg = float32_init(0);
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -178,6 +222,24 @@ tid_t thread_create(const char *name, int priority,
   init_thread(t, name, priority);
   tid = t->tid = allocate_tid();
 
+
+  struct child_message *own = palloc_get_page(PAL_ZERO);
+  own->tid = tid;
+  own->tchild = t;
+  own->exited = false;
+  own->terminated = false;
+  own->load_failed = false;
+  own->return_value = 0;
+  own->sema_finished = &t->sema_finished;
+  own->sema_started = &t->sema_started;
+  list_push_back(&children, &own->allelem);
+  t->message_to_grandpa = own;
+
+  t->current_dir = thread_current()->current_dir;
+#ifdef USERPROG
+  t->exec_file = NULL;
+#endif
+
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame(t, sizeof *kf);
   kf->eip = NULL;
@@ -195,6 +257,7 @@ tid_t thread_create(const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock(t);
+  thread_revolt();
 
   return tid;
 }
@@ -230,7 +293,7 @@ void thread_unblock(struct thread *t)
 
   old_level = intr_disable();
   ASSERT(t->status == THREAD_BLOCKED);
-  list_push_back(&ready_list, &t->elem);
+  thread_insert_ready_list(&t->elem);
   t->status = THREAD_READY;
   intr_set_level(old_level);
 }
@@ -275,6 +338,30 @@ void thread_exit(void)
 
 #ifdef USERPROG
   process_exit();
+  sema_up(&thread_current()->sema_finished);
+
+  struct thread *cur = thread_current();
+  if (!list_empty(&file_list))
+  {
+    struct list_elem *i;
+    for (i = list_begin(&file_list); i != list_end(&file_list); i = list_next(i))
+    {
+      struct file_handle *hd;
+      hd = list_entry(i, struct file_handle, elem);
+      if (hd->owned_thread == cur)
+      {
+        syscall_file_close(hd->opened_file);
+        i = list_prev(i);
+        list_remove(&(hd->elem));
+        free(hd);
+      }
+    }
+  }
+  if (cur->exec_file != NULL)
+  {
+    syscall_file_close(cur->exec_file);
+  }
+
 #endif
 
   /* Remove thread from all threads list, set our status to dying,
@@ -298,7 +385,8 @@ void thread_yield(void)
 
   old_level = intr_disable();
   if (cur != idle_thread)
-    list_push_back(&ready_list, &cur->elem);
+    thread_insert_ready_list(&cur->elem);
+
   cur->status = THREAD_READY;
   schedule();
   intr_set_level(old_level);
@@ -323,40 +411,105 @@ void thread_foreach(thread_action_func *func, void *aux)
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void thread_set_priority(int new_priority)
 {
-  thread_current()->priority = new_priority;
+  if (thread_mlfqs)
+    return;
+  /* Warning: if current thread is donated,
+     this behaviour should be delayed until the donation is released! */
+  if (thread_current()->max_donate == 0)
+  {
+    thread_current()->priority = new_priority;
+    thread_revolt();
+  }
+  else /* Delay this behaviour temporarily. */
+    thread_current()->priority_to_set = new_priority;
+    
 }
 
 /* Returns the current thread's priority. */
 int thread_get_priority(void)
 {
-  return thread_current()->priority;
+  return thread_get_certain_priority(thread_current());
 }
 
-/* Sets the current thread's nice value to NICE. */
-void thread_set_nice(int nice UNUSED)
+/* Returns the certain thread's priority. */
+int thread_get_certain_priority(const struct thread *t)
 {
-  /* Not yet implemented. */
+  return t->priority + (thread_mlfqs ? 0 : t->max_donate);
+}
+
+/* Update thread priority using recent_cpu and nice value of threads */
+static void
+thread_update_priority(struct thread *t, void *args UNUSED)
+{
+  if (t == idle_thread)
+    return;
+  int recent_cpu_div4 = float32_trunc(float32_div_int(t->recent_cpu, 4));
+  t->priority = PRI_MAX - recent_cpu_div4 - t->nice * 2;
+}
+
+
+/* Sets the current thread's nice value to NICE. */
+void thread_set_nice(int nice)
+{
+  thread_current()->nice = nice;
+  if (thread_mlfqs)
+    thread_update_priority(thread_current(), NULL);
 }
 
 /* Returns the current thread's nice value. */
 int thread_get_nice(void)
 {
-  /* Not yet implemented. */
-  return 0;
+  struct thread *cur = thread_current();
+  return cur->nice;
+}
+
+/* Update load_avg
+ * load_avg = 59/60 * load_avg + 1/60 * ready_threads
+ * */
+static void
+thread_update_load_avg(void)
+{
+
+  ASSERT(thread_mlfqs);
+  int ready_threads = 0;
+  struct list_elem *e;
+  for (e = list_begin(&all_list); e != list_end(&all_list);
+       e = list_next(e))
+  {
+    struct thread *t = list_entry(e, struct thread, allelem);
+    if ((t->status == THREAD_RUNNING || t->status == THREAD_READY) && t != idle_thread)
+      ready_threads++;
+  }
+  load_avg = float32_div_int(float32_add_int(float32_mul_int(load_avg, 59), ready_threads), 60);
 }
 
 /* Returns 100 times the system load average. */
 int thread_get_load_avg(void)
 {
-  /* Not yet implemented. */
-  return 0;
+  ASSERT(thread_mlfqs);
+  return float32_round(float32_mul_int(load_avg, 100));
+}
+
+/* Update recent_cpu
+ * recent_cpu = recent_cpu * (load_avg * 2 / (load_avg * 2 + 1)) + nice
+ * Nice is thread's nice value
+ * */
+static void
+thread_update_recent_cpu(struct thread *t, void *aux UNUSED)
+{
+  ASSERT(thread_mlfqs);
+  int load_avg2 = thread_get_load_avg() * 2;
+  t->recent_cpu = float32_add_int(float32_mul(float32_div_int2(load_avg2, load_avg2 + 100),
+                                                                t->recent_cpu),
+                                           t->nice);
 }
 
 /* Returns 100 times the current thread's recent_cpu value. */
 int thread_get_recent_cpu(void)
 {
-  /* Not yet implemented. */
-  return 0;
+  ASSERT(thread_mlfqs);
+  return float32_trunc(
+      float32_mul_int(thread_current()->recent_cpu, 100));
 }
 
 /* Idle thread.  Executes when no other thread is ready to run.
@@ -382,17 +535,16 @@ idle(void *idle_started_ UNUSED)
     thread_block();
 
     /* Re-enable interrupts and wait for the next one.
+       The `sti' instruction disables interrupts until the
+       completion of the next instruction, so these two
+       instructions are executed atomically.  This atomicity is
+       important; otherwise, an interrupt could be handled
+       between re-enabling interrupts and waiting for the next
+       one to occur, wasting as much as one clock tick worth of
+       time.
 
-         The `sti' instruction disables interrupts until the
-         completion of the next instruction, so these two
-         instructions are executed atomically.  This atomicity is
-         important; otherwise, an interrupt could be handled
-         between re-enabling interrupts and waiting for the next
-         one to occur, wasting as much as one clock tick worth of
-         time.
-
-         See [IA32-v2a] "HLT", [IA32-v2b] "STI", and [IA32-v3a]
-         7.11.1 "HLT Instruction". */
+       See [IA32-v2a] "HLT", [IA32-v2b] "STI", and [IA32-v3a]
+       7.11.1 "HLT Instruction". */
     asm volatile("sti; hlt"
                  :
                  :
@@ -450,6 +602,26 @@ init_thread(struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *)t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
+
+  if (thread_mlfqs)
+  {
+    t->nice = 0;
+    t->recent_cpu = float32_init(0);
+    t->priority = PRI_MAX;
+  }
+
+  t->priority_to_set = -1;
+  t->max_donate = 0;
+
+  t->father = NULL;
+  list_init(&t->lock_list);
+
+  t->grandpa_died = false;
+  list_init(&t->child_list);
+  sema_init(&t->sema_finished, 0);
+  sema_init(&t->sema_started, 0);
+
+  t->return_value = 0;
 
   old_level = intr_disable();
   list_push_back(&all_list, &t->allelem);
@@ -568,3 +740,145 @@ allocate_tid(void)
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof(struct thread, stack);
+
+
+
+/* Handle sleep_ticks for each thread */
+static void
+thread_sleep_checker(struct thread *t, void *args UNUSED)
+{
+  if (t->sleep_ticks > 0)
+  {
+    (t->sleep_ticks)--;
+    if (!(t->sleep_ticks))
+      thread_unblock(t);
+  }
+}
+
+
+/* For comparing two threads by their priorities.
+   Return true if a_ points to the thread with higher priority. */
+static bool thread_priority_greater(const struct list_elem *a_, const struct list_elem *b_,
+                          void *aux UNUSED)
+{
+  const struct thread *a = list_entry(a_, struct thread, elem);
+  const struct thread *b = list_entry(b_, struct thread, elem);
+
+  return thread_get_certain_priority(a) > thread_get_certain_priority(b);
+}
+
+/* Check if current thread need to yield
+   (its priority is lower than the first one in the ready list). */
+void thread_revolt(void)
+{
+  if (thread_current() != idle_thread &&
+      !list_empty(&ready_list) &&
+      thread_get_priority() <
+          thread_get_certain_priority(
+              list_entry(list_begin(&ready_list), struct thread, elem)))
+  {
+    thread_yield();
+  }
+}
+
+/* Insert a thread to the ready list in order. */
+static void thread_insert_ready_list(struct list_elem *elem)
+{
+  if (!list_empty(&ready_list))
+    list_insert_ordered(&ready_list, elem, thread_priority_greater, NULL);
+  else
+    list_push_back(&ready_list, elem);
+}
+
+static void thread_ready_list_greater(void)
+{
+  list_sort(&ready_list, thread_priority_greater, NULL);
+}
+
+void thread_timer(bool full_second)
+{
+  if (thread_mlfqs)
+  {
+    thread_add_recent_cpu();
+    if (full_second)
+    {
+      thread_update_load_avg();
+      thread_foreach(thread_update_recent_cpu, NULL);
+      thread_foreach(thread_update_priority, NULL);
+      thread_ready_list_greater();
+    }
+  }
+  thread_foreach(thread_sleep_checker, NULL);
+}
+
+/* Add recent_cpu of the running thread by 1 per second */
+static void thread_add_recent_cpu(void)
+{
+  ASSERT(thread_mlfqs);
+  struct thread *cur = thread_current();
+  if (cur != idle_thread)
+    cur->recent_cpu = float32_add_int(cur->recent_cpu, 1);
+  thread_update_priority(thread_current(), NULL);
+}
+
+
+
+struct child_message *thread_get_child_message(tid_t tid)
+{
+  struct list_elem *e;
+  struct child_message *l;
+  for (e = list_rbegin(&children); e != list_rend(&children); e = list_prev(e))
+  {
+    l = list_entry(e, struct child_message, allelem);
+    if (l->tid == tid)
+      return l;
+  }
+  return NULL;
+}
+
+#ifdef FILESYS
+/*
+ * Set main thread's current directory
+ * MUST use after filesys init
+ * */
+void set_main_thread_dir()
+{
+  initial_thread->current_dir = dir_open_root();
+}
+#endif
+
+/* Terminate thread with a return value FINAL_VALUE */
+void thread_exit_with_return_value(struct intr_frame *f, int return_value)
+{
+  struct thread *cur = thread_current();
+  cur->return_value = return_value;
+  f->eax = (uint32_t)return_value;
+  thread_exit();
+}
+
+void thread_file_list_inster(struct file_handle *fh)
+{
+  list_push_back(&file_list, &(fh->elem));
+}
+
+/* Get the file_handle pointer according to fd
+ * Return NULL if fd is invalid
+ * */
+struct file_handle *syscall_get_file_handle(int fd)
+{
+  struct thread *cur = thread_current();
+  struct list_elem *i;
+  for (i = list_begin(&file_list); i != list_end(&file_list); i = list_next(i))
+  {
+    struct file_handle *t;
+    t = list_entry(i, struct file_handle, elem);
+    if (t->fd == fd)
+    {
+      if (t->owned_thread != cur)
+        return NULL;
+      else
+        return t;
+    }
+  }
+  return NULL;
+}

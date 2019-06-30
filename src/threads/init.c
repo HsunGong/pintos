@@ -38,6 +38,10 @@
 #include "filesys/fsutil.h"
 #endif
 
+#include "tests/threads/tests.h"
+#include "../devices/shutdown.h"
+#include "threads/vaddr.h"
+
 /* Page directory with kernel mappings only. */
 uint32_t *init_page_dir;
 
@@ -52,7 +56,7 @@ static const char *scratch_bdev_name;
 #ifdef VM
 static const char *swap_bdev_name;
 #endif
-#endif /* FILESYS */
+#endif
 
 /* -ul: Maximum number of pages to put into palloc's user pool. */
 static size_t user_page_limit = SIZE_MAX;
@@ -135,9 +139,37 @@ int pintos_init(void)
   }
   else
   {
-    // TODO: no command line passed to kernel. Run interactively
-  }
 
+#define CMD_LENGTH 128
+    char cmd[CMD_LENGTH] = {'\0'};
+
+    while (true)
+    {
+      int tick = timer_ticks();
+      int sec = tick / TIMER_FREQ;
+      int min = sec / 60;
+      int hour = min / 60;
+      char output_str[CMD_LENGTH] = {'\0'};
+
+      snprintf(output_str, CMD_LENGTH, "~ at %02d:%02d:%02d||", hour % 24, min % 60, sec % 60);
+      puts(output_str);
+      puts("$ \0");
+
+      readline(cmd, CMD_LENGTH);
+      
+      if (strcmp(cmd, "info") == 0)
+        puts("PintOS--SJTU");
+
+      else if (strcmp(cmd, "exit") == 0)
+      {
+        shutdown_configure(SHUTDOWN_POWER_OFF);
+        break;
+      }
+      else
+        puts("Can not found.");
+    }
+#undef CMD_LENGTH
+  }
   /* Finish up. */
   shutdown();
   thread_exit();
@@ -290,7 +322,6 @@ static void
 run_task(char **argv)
 {
   const char *task = argv[1];
-
   printf("Executing '%s':\n", task);
 #ifdef USERPROG
   process_wait(process_execute(task));
