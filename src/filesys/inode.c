@@ -6,16 +6,21 @@
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
 #include "threads/malloc.h"
-
 #include "filesys/cache.h"
 #include "threads/synch.h"
 
+/* Identifies an inode. */
+#define INODE_MAGIC 0x494e4f44
+#define TABLE_SIZE 128
+
+static char zeros[BLOCK_SECTOR_SIZE];
+static char empty[BLOCK_SECTOR_SIZE];
 
 static off_t byte_to_t2(off_t pos);
 static off_t byte_to_t1(off_t pos);
 
-static char empty[BLOCK_SECTOR_SIZE];
-static char zeros[BLOCK_SECTOR_SIZE];
+
+
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
@@ -24,7 +29,7 @@ struct inode_disk
   block_sector_t table; /* Table data sector. */
   off_t length;         /* File size in bytes. */
   unsigned magic;       /* Magic number. */
-  uint8_t unused[NOT_USED_MAX]; /* Not used. */
+  uint8_t unused[499]; /* Not used. */
   bool is_dir;
 };
 
@@ -69,13 +74,14 @@ byte_to_sector(struct inode *inode, off_t pos, bool create)
     }
     else
     {
+      off_t i, j;
       off_t t1_s = byte_to_t1(inode->data.length);
       off_t t2_s = byte_to_t2(inode->data.length);
       off_t t1_t = byte_to_t1(pos);
       off_t t2_t = byte_to_t2(pos);
 
       cache_read(inode->data.table, t1);
-      for (off_t i = t1_s; i <= t1_t; i++)
+      for (i = t1_s; i <= t1_t; i++)
       {
         off_t l = (i == t1_s ? t2_s : 0);
         off_t r = (i == t1_t ? t2_t : TABLE_SIZE - 1);
@@ -88,12 +94,11 @@ byte_to_sector(struct inode *inode, off_t pos, bool create)
             free(t2);
             return -1;
           }
-
           cache_write(t1[i], empty);
         }
 
         cache_read(t1[i], t2);
-        for (off_t j = l; j <= r; j++)
+        for (j = l; j <= r; j++)
         {
           if (t2[j] == -1)
           {
@@ -103,11 +108,9 @@ byte_to_sector(struct inode *inode, off_t pos, bool create)
               free(t2);
               return -1;
             }
-
             cache_write(t2[j], zeros);
           }
         }
-
         cache_write(t1[i], t2);
       }
       cache_write(inode->data.table, t1);
@@ -171,11 +174,12 @@ bool inode_create(block_sector_t sector, off_t length)
         block_sector_t *t1 = calloc(TABLE_SIZE, sizeof *t1);
         block_sector_t *t2 = calloc(TABLE_SIZE, sizeof *t2);
 
+        int i, j;
         off_t t1_t = byte_to_t1(length - 1);
         off_t t2_t = byte_to_t2(length - 1);
 
         cache_read(disk_inode->table, t1);
-        for (off_t i = 0; i <= t1_t; i++)
+        for (i = 0; i <= t1_t; i++)
         {
           off_t r = (i == t1_t ? t2_t : TABLE_SIZE - 1);
 
@@ -186,11 +190,10 @@ bool inode_create(block_sector_t sector, off_t length)
             free(disk_inode);
             return false;
           }
-
           cache_write(t1[i], empty);
 
           cache_read(t1[i], t2);
-          for (off_t j = 0; j <= r; j++)
+          for (j = 0; j <= r; j++)
           {
             if (!free_map_allocate(1, &t2[j]))
             {
@@ -211,13 +214,10 @@ bool inode_create(block_sector_t sector, off_t length)
         free(t1);
         free(t2);
       }
-
       success = true;
     }
-
     free(disk_inode);
   }
-
   return success;
 }
 
@@ -253,7 +253,6 @@ inode_open(block_sector_t sector)
   inode->open_cnt = 1;
   inode->deny_write_cnt = 0;
   inode->removed = false;
-
   cache_read(inode->sector, &inode->data);
   return inode;
 }
@@ -298,16 +297,17 @@ void inode_close(struct inode *inode)
         block_sector_t *t1 = calloc(TABLE_SIZE, sizeof *t1);
         block_sector_t *t2 = calloc(TABLE_SIZE, sizeof *t2);
 
+        int i, j;
         off_t t1_t = byte_to_t1(length - 1);
         off_t t2_t = byte_to_t2(length - 1);
 
         cache_read(inode->data.table, t1);
-        for (off_t i = 0; i <= t1_t; i++)
+        for (i = 0; i <= t1_t; i++)
         {
           off_t r = (i == t1_t ? t2_t : TABLE_SIZE - 1);
 
           cache_read(t1[i], t2);
-          for (off_t j = 0; j <= r; j++)
+          for (j = 0; j <= r; j++)
           {
             free_map_release(t2[j], 1);
           }
@@ -371,7 +371,6 @@ off_t inode_read_at(struct inode *inode, void *buffer_, off_t size, off_t offset
       if (bounce == NULL)
       {
         bounce = malloc(BLOCK_SECTOR_SIZE);
-
         if (bounce == NULL)
           break;
       }
@@ -480,17 +479,17 @@ off_t inode_length(const struct inode *inode)
   return inode->data.length;
 }
 
-/* Set inode to be a dir. */
+/* Returns if this inode is directory */
+bool inode_isdir(const struct inode *inode)
+{
+  return inode->data.is_dir;
+}
+
+/* Set inode to be a directory. God bless it runs OK */
 void inode_set_dir(struct inode *inode)
 {
   inode->data.is_dir = true;
   cache_write(inode->sector, &inode->data);
-}
-
-/* Returns if this inode is dir */
-bool inode_isdir(const struct inode *inode)
-{
-  return inode->data.is_dir;
 }
 
 int inode_get_opencnt(struct inode *inode)
@@ -498,7 +497,8 @@ int inode_get_opencnt(struct inode *inode)
   return inode->open_cnt;
 }
 
-/* Map the pos into tables */
+/* Map the pos into tables
+*/
 static off_t
 byte_to_t1(off_t pos)
 {

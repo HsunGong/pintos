@@ -12,13 +12,16 @@
 #include "threads/synch.h"
 #include "threads/vaddr.h"
 #ifdef USERPROG
-#include "userprog/process.h"
 #include "malloc.h"
+#include "userprog/process.h"
+#include <userprog/syscall.h>
 #endif
 #include "list.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
-
+#ifdef VM
+#include <vm/page.h>
+#endif
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -623,6 +626,11 @@ init_thread(struct thread *t, const char *name, int priority)
 
   t->return_value = 0;
 
+#ifdef VM
+    list_init(&t->mmap_list);
+    t->next_mapid = 1;
+#endif
+
   old_level = intr_disable();
   list_push_back(&all_list, &t->allelem);
   intr_set_level(old_level);
@@ -795,7 +803,7 @@ static void thread_ready_list_greater(void)
   list_sort(&ready_list, thread_priority_greater, NULL);
 }
 
-void thread_timer(bool full_second)
+void thread_ticker(bool full_second)
 {
   if (thread_mlfqs)
   {
@@ -860,6 +868,8 @@ void thread_file_list_inster(struct file_handle *fh)
 {
   list_push_back(&file_list, &(fh->elem));
 }
+
+
 
 /* Get the file_handle pointer according to fd
  * Return NULL if fd is invalid

@@ -4,10 +4,11 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
-
 #include "synch.h"
-#include "float32.h"
-#include "interrupt.h"
+#include "../lib/kernel/hash.h"
+#include "threads/float32.h"
+#include "threads/interrupt.h"
+#include "filesys/off_t.h"
 #include "filesys/directory.h"
 
 /* States in a thread's life cycle. */
@@ -111,12 +112,12 @@ struct thread
 
     unsigned magic; /* Detects stack overflow. */
 
+    struct float32 recent_cpu; /* Thread recent cpu usage */
 
     int64_t sleep_ticks; /* Ticks that the thread to sleep. */
+
     struct list lock_list; /* Locks owned by this thread. */
     int priority_to_set;   /* Priority to be set. */
-
-    struct float32 recent_cpu; /* Thread recent cpu usage */
 
     int nice;                     /* The nice level of thread, the higher the lower priority */
     int max_donate;               /* Max Donation. */
@@ -129,8 +130,17 @@ struct thread
     bool grandpa_died;              /* Grandpa is dead or not. */
     struct child_message *message_to_grandpa; /* Child message for grandpa. */
 
+
     struct dir *current_dir;
     int return_value; /* Return value of the thread (anyway, nobody cares)*/
+
+#ifdef VM
+    struct hash* page_table;
+    void* esp;
+    struct list mmap_list;
+    mapid_t next_mapid;
+#endif
+
 };
 
 /* If false (default), use round-robin scheduler.
@@ -171,7 +181,7 @@ int thread_get_load_avg(void);
 
 
 
-void thread_timer(bool);
+void thread_ticker(bool);
 
 int thread_get_certain_priority(const struct thread *t);
 
@@ -206,12 +216,25 @@ struct file_handle
 #endif
     struct list_elem elem;
 };
-
 void thread_exit_with_return_value(struct intr_frame *f, int return_value);
 void thread_file_list_inster(struct file_handle *fh);
 struct file_handle *syscall_get_file_handle(int fd);
 #ifdef FILESYS
 void set_main_thread_dir();
 #endif
+
+struct mmap_handler{
+    mapid_t mapid;
+    void* va;
+    struct file* fd;
+    off_t fa;
+    int page_cnt;
+    int last_page_size; //0 denotes that the it is aligned
+    struct list_elem elem;
+    bool dirty;
+    bool is_static;
+    bool is_segment;
+    int num_page_with_segment; // total pages with zeros bytes
+};
 
 #endif /* threads/thread.h */

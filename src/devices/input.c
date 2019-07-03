@@ -19,18 +19,18 @@ void readline(char *str, int max_len)
 
     switch (ch)
     {
+    case 0x03:
+    case 0x04:
+    case 0x0D:
+      isEnd = true;
+      break;
+
     case 0x09:
     case 0x20:
       putchar(ch);
       str[len++] = ch;
       break;
 
-    case 0x03:
-    case 0x04:
-    case 0x0D:
-      isEnd = true;
-      break;
-    
     case 0x08:
       if (len > 0)
       {
@@ -39,7 +39,6 @@ void readline(char *str, int max_len)
         break;
       }
       __attribute__ ((fallthrough)); // C and C++03
-    
     default:
       if (ch >= 0x21 && ch <= 0x7E)
       {

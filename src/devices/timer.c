@@ -92,7 +92,7 @@ void timer_sleep(int64_t ticks)
 
   struct thread *cur = thread_current();
   cur->sleep_ticks = ticks;
-
+  
   enum intr_level old_level = intr_disable(); // intr off to call thread_block().
   thread_block();
   intr_set_level(old_level); // restore the original level.
@@ -168,7 +168,7 @@ timer_interrupt(struct intr_frame *args UNUSED)
   ticks++;
   thread_tick();
 
-  thread_timer(timer_ticks() % TIMER_FREQ == 0);
+  thread_ticker(timer_ticks() % TIMER_FREQ == 0);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
@@ -218,9 +218,18 @@ real_time_sleep(int64_t num, int32_t denom)
 
   ASSERT(intr_get_level() == INTR_ON);
   if (ticks > 0)
-    timer_sleep(ticks); // waiting for at least one full timer tick. it will yield the CPU to other processes.
+  {
+    /* We're waiting for at least one full timer tick.  Use
+       timer_sleep() because it will yield the CPU to other
+       processes. */
+    timer_sleep(ticks);
+  }
   else
-    real_time_delay(num, denom); // use a busy-wait loop for more accurate sub-tick timing.
+  {
+    /* Otherwise, use a busy-wait loop for more accurate
+       sub-tick timing. */
+    real_time_delay(num, denom);
+  }
 }
 
 /* Busy-wait for approximately NUM/DENOM seconds. */

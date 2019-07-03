@@ -32,7 +32,7 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
-static void notify_dad(struct thread *t);
+static void notify_father(struct thread *t);
 
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
@@ -136,7 +136,6 @@ void sema_up(struct semaphore *sema)
         t_max = t_tmp;
       }
     }
-    
     while (true)
     {
       t_tmp = list_entry(list_pop_front(&sema->waiters), struct thread, elem);
@@ -245,7 +244,7 @@ void lock_acquire(struct lock *lock)
     if (delta > lock->holder->max_donate)
     {
       lock->holder->max_donate = delta;
-      notify_dad(lock->holder);
+      notify_father(lock->holder);
     }
   }
 
@@ -315,7 +314,7 @@ void lock_release(struct lock *lock)
   }
 
   if (t->max_donate != old_donate)
-    notify_dad(t);
+    notify_father(t);
 
   if (t->max_donate == 0 && t->priority_to_set > -1)
   {
@@ -462,7 +461,7 @@ void cond_broadcast(struct condition *cond, struct lock *lock)
 
 /* The thread (with thread_lockers ID : tpos) has had a new donation,
    now it need to pass that back to its father along the chain in the waiting DAG. */
-static void notify_dad(struct thread *t)
+static void notify_father(struct thread *t)
 {
   if (t == NULL)
     return;
@@ -487,5 +486,5 @@ static void notify_dad(struct thread *t)
       father->max_donate = l->max_donate;
   }
   if (father->max_donate != old_donate)
-    notify_dad(father);
+    notify_father(father);
 }

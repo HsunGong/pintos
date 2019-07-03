@@ -24,9 +24,4 @@ bool inode_isdir(const struct inode *);
 void inode_set_dir(struct inode *);
 int inode_get_opencnt(struct inode *);
 
-/* Identifies an inode. */
-#define INODE_MAGIC 0x494e4f44
-#define TABLE_SIZE 128
-#define NOT_USED_MAX 499
-
 #endif /* filesys/inode.h */

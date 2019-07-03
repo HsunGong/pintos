@@ -18,6 +18,13 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
+#ifdef VM
+#include <userprog/syscall.h>
+#include <threads/malloc.h>
+#include <vm/frame.h>
+#include <vm/page.h>
+#endif
+
 static thread_func start_process NO_RETURN;
 static bool load(const char *cmdline, void (**eip)(void), void **esp);
 
@@ -179,6 +186,19 @@ void process_exit(void)
   struct thread *cur = thread_current();
   uint32_t *pd;
 
+#ifdef VM
+    struct list* mmap_list = &cur->mmap_list;
+    if (!list_empty(mmap_list)){
+        struct mmap_handler* mh;
+        while (!list_empty(mmap_list)){
+            mh = list_entry(list_pop_front (mmap_list), struct mmap_handler, elem);
+            for (int i = 0; i < mh->num_page_with_segment; i++)
+                page_unmap(cur->page_table, mh->va + i * PGSIZE);
+            process_delete_mmap_handler(mh);
+        }
+    }
+#endif
+
   struct list_elem *e;
   struct child_message *l;
   while (!list_empty(&cur->child_list))
@@ -188,6 +208,10 @@ void process_exit(void)
     l->tchild->grandpa_died = true;
     palloc_free_page(l);
   }
+
+#ifdef VM
+    page_free(cur->page_table);
+#endif
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -306,6 +330,12 @@ bool load(const char *file_name, void (**eip)(void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
+
+#ifdef VM
+    t->page_table = page_create();
+    if(t->page_table == NULL)
+        goto done;
+#endif
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create();
@@ -476,7 +506,9 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
   ASSERT((read_bytes + zero_bytes) % PGSIZE == 0);
   ASSERT(pg_ofs(upage) == 0);
   ASSERT(ofs % PGSIZE == 0);
-
+#ifdef VM
+  return mmap_load_segment(file, ofs, upage, read_bytes, zero_bytes, writable);
+#else
   file_seek(file, ofs);
   while (read_bytes > 0 || zero_bytes > 0)
   {
@@ -512,6 +544,7 @@ load_segment(struct file *file, off_t ofs, uint8_t *upage,
     upage += PGSIZE;
   }
   return true;
+#endif
 }
 
 /* Create a minimal stack by mapping a zeroed page at the top of
@@ -521,16 +554,27 @@ setup_stack(void **esp)
 {
   uint8_t *kpage;
   bool success = false;
-
+#ifdef VM
+    kpage = frame_apply(PAL_USER | PAL_ZERO, ((uint8_t *) PHYS_BASE) - PGSIZE);
+#else
   kpage = palloc_get_page(PAL_USER | PAL_ZERO);
+#endif
   if (kpage != NULL)
   {
     success = install_page(((uint8_t *)PHYS_BASE) - PGSIZE, kpage, true);
     if (success)
       *esp = PHYS_BASE;
     else
-      palloc_free_page(kpage);
+#ifdef VM
+    frame_free(kpage);
+#else
+    palloc_free_page(kpage);
+#endif
   }
+#ifdef VM
+    if (success)
+        frame_reset(kpage);
+#endif
   return success;
 }
 
@@ -546,9 +590,50 @@ setup_stack(void **esp)
 static bool
 install_page(void *upage, void *kpage, bool writable)
 {
+#ifdef VM
+    return page_set_frame(upage, kpage, writable);
+#else
   struct thread *t = thread_current();
 
   /* Verify that there's not already a page at that virtual
      address, then map our page there. */
   return (pagedir_get_page(t->pagedir, upage) == NULL && pagedir_set_page(t->pagedir, upage, kpage, writable));
+#endif
 }
+
+struct mmap_handler* process_get_mmap_handler(mapid_t mapid) {
+#ifdef VM
+    struct list_elem* e;
+    struct mmap_handler* mh;
+    struct thread* curT = thread_current();
+    if (!list_empty(&curT->mmap_list)){
+        for(e = list_begin(&curT->mmap_list); e != list_end(&curT->mmap_list); e = list_next(e)){
+            mh = list_entry(e, struct mmap_handler, elem);
+            if (mh->mapid == mapid)
+                return mh;
+        }
+    }
+    return NULL;
+#endif
+}
+
+bool process_delete_mmap_handler(struct mmap_handler *mh) {
+#ifdef VM
+    struct list_elem* e;
+    struct mmap_handler* tmp;
+    struct thread* curT = thread_current();
+    if (!list_empty(&curT->mmap_list)) {
+        for(e = list_begin(&curT->mmap_list); e != list_end(&curT->mmap_list); e = list_next(e)) {
+            tmp = list_entry(e, struct mmap_handler, elem);
+            if (tmp == mh) {
+                list_remove(e);
+                syscall_file_close(mh->fd);
+                free(mh);
+                return true;
+            }
+        }
+    }
+    return false;
+#endif
+}
+

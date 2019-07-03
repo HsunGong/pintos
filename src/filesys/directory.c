@@ -6,29 +6,39 @@
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 
+#define DIR_BASE_ENTRY 2
+
+/* A single directory entry. */
+struct dir_entry
+{
+  block_sector_t inode_sector; /* Sector number of header. */
+  char name[NAME_MAX + 1];     /* Null terminated file name. */
+  bool in_use;                 /* In use or free? */
+};
 
 /* Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
 bool dir_create(block_sector_t sector, size_t entry_cnt)
 {
-  bool suc = inode_create(sector, (DIR_BASE_ENTRY + entry_cnt) * sizeof(struct dir_entry));
+  bool success = inode_create(sector, (DIR_BASE_ENTRY + entry_cnt) * sizeof(struct dir_entry));
 
-  if (suc)
+  if (success)
   {
-    struct inode *inode = inode_open(sector);
+    struct inode *inode;
+    struct dir *dir;
+
+    inode = inode_open(sector);
     ASSERT(inode != NULL);
-
     inode_set_dir(inode);
-    struct dir *dir = dir_open(inode);
 
+    dir = dir_open(inode);
     ASSERT(dir != NULL);
     ASSERT(dir_add(dir, ".", sector));
     ASSERT(dir_add(dir, "..", sector));
-    
     dir_close(dir);
   }
 
-  return suc;
+  return success;
 }
 
 /* Opens and returns the directory for the given INODE, of which
@@ -185,7 +195,6 @@ bool dir_add(struct dir *dir, const char *name, block_sector_t inode_sector)
     {
       struct dir *subdir = dir_open(inode);
       ASSERT(lookup(subdir, "..", &e, &ofs));
-
       e.inode_sector = inode_get_inumber(dir->inode);
       ASSERT(inode_write_at(subdir->inode, &e, sizeof e, ofs) == sizeof e);
       dir_close(subdir);
@@ -255,10 +264,6 @@ bool dir_readdir(struct dir *dir, char name[NAME_MAX + 1])
   return false;
 }
 
-bool is_dirfile(struct file_handle *fh)
-{
-  return inode_isdir(file_get_inode(fh->opened_file));
-}
 
 bool subdir_create(struct dir *current_dir, char *subdir_name)
 {
@@ -273,16 +278,23 @@ bool subdir_create(struct dir *current_dir, char *subdir_name)
   return success;
 }
 
-bool subfile_create(struct dir *current_dir, char *file_name, off_t initial_size)
+struct dir *
+subdir_lookup(struct dir *current_dir, char *subdir_name)
 {
-  ASSERT(file_name != NULL);
-  if (strlen(file_name) == 0)
-    return false;
-  block_sector_t block_sector = -1;
-  bool success = (current_dir != NULL && free_map_allocate(1, &block_sector) && inode_create(block_sector, initial_size) && dir_add(current_dir, file_name, block_sector));
-  if (!success && block_sector != -1)
-    free_map_release(block_sector, 1);
-  return success;
+  ASSERT(current_dir != NULL)
+  ASSERT(subdir_name != NULL)
+  if (strlen(subdir_name) == 0)
+    return NULL;
+  struct inode *inode = NULL;
+  bool res = dir_lookup(current_dir, subdir_name, &inode);
+  if (!res || inode == NULL)
+    return NULL;
+  if (!inode_isdir(inode))
+  {
+    inode_close(inode);
+    return NULL;
+  }
+  return dir_open(inode);
 }
 
 bool subdir_delete(struct dir *current_dir, char *subdir_name)
@@ -324,42 +336,16 @@ bool subdir_delete(struct dir *current_dir, char *subdir_name)
   return dir_remove(current_dir, subdir_name);
 }
 
-bool subfile_delete(struct dir *current_dir, char *file_name)
+bool subfile_create(struct dir *current_dir, char *file_name, off_t initial_size)
 {
-  ASSERT(current_dir != NULL)
-  ASSERT(file_name != NULL)
+  ASSERT(file_name != NULL);
   if (strlen(file_name) == 0)
     return false;
-  struct inode *inode = NULL;
-  bool res = dir_lookup(current_dir, file_name, &inode);
-  if (!res || inode == NULL)
-    return false;
-  if (inode_isdir(inode))
-  {
-    inode_close(inode);
-    return false;
-  }
-  inode_close(inode);
-  return dir_remove(current_dir, file_name);
-}
-
-struct dir *
-subdir_lookup(struct dir *current_dir, char *subdir_name)
-{
-  ASSERT(current_dir != NULL)
-  ASSERT(subdir_name != NULL)
-  if (strlen(subdir_name) == 0)
-    return NULL;
-  struct inode *inode = NULL;
-  bool res = dir_lookup(current_dir, subdir_name, &inode);
-  if (!res || inode == NULL)
-    return NULL;
-  if (!inode_isdir(inode))
-  {
-    inode_close(inode);
-    return NULL;
-  }
-  return dir_open(inode);
+  block_sector_t block_sector = -1;
+  bool success = (current_dir != NULL && free_map_allocate(1, &block_sector) && inode_create(block_sector, initial_size) && dir_add(current_dir, file_name, block_sector));
+  if (!success && block_sector != -1)
+    free_map_release(block_sector, 1);
+  return success;
 }
 
 struct file *
@@ -381,4 +367,28 @@ subfile_lookup(struct dir *current_dir, char *file_name)
   struct file *file = file_open(inode);
   set_file_dir(file, dir_reopen(current_dir));
   return file;
+}
+
+bool subfile_delete(struct dir *current_dir, char *file_name)
+{
+  ASSERT(current_dir != NULL)
+  ASSERT(file_name != NULL)
+  if (strlen(file_name) == 0)
+    return false;
+  struct inode *inode = NULL;
+  bool res = dir_lookup(current_dir, file_name, &inode);
+  if (!res || inode == NULL)
+    return false;
+  if (inode_isdir(inode))
+  {
+    inode_close(inode);
+    return false;
+  }
+  inode_close(inode);
+  return dir_remove(current_dir, file_name);
+}
+
+bool is_dirfile(struct file_handle *fh)
+{
+  return inode_isdir(file_get_inode(fh->opened_file));
 }
