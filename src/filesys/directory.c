@@ -8,37 +8,28 @@
 
 #define DIR_BASE_ENTRY 2
 
-/* A single directory entry. */
-struct dir_entry
-{
-  block_sector_t inode_sector; /* Sector number of header. */
-  char name[NAME_MAX + 1];     /* Null terminated file name. */
-  bool in_use;                 /* In use or free? */
-};
-
 /* Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
 bool dir_create(block_sector_t sector, size_t entry_cnt)
 {
-  bool success = inode_create(sector, (DIR_BASE_ENTRY + entry_cnt) * sizeof(struct dir_entry));
+  bool suc = inode_create(sector, (DIR_BASE_ENTRY + entry_cnt) * sizeof(struct dir_entry));
 
-  if (success)
+  if (suc)
   {
-    struct inode *inode;
-    struct dir *dir;
-
-    inode = inode_open(sector);
+    struct inode *inode = inode_open(sector);
     ASSERT(inode != NULL);
-    inode_set_dir(inode);
 
-    dir = dir_open(inode);
+    inode_set_dir(inode);
+    struct dir *dir = dir_open(inode);
+
     ASSERT(dir != NULL);
     ASSERT(dir_add(dir, ".", sector));
     ASSERT(dir_add(dir, "..", sector));
+    
     dir_close(dir);
   }
 
-  return success;
+  return suc;
 }
 
 /* Opens and returns the directory for the given INODE, of which

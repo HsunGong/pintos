@@ -74,14 +74,13 @@ byte_to_sector(struct inode *inode, off_t pos, bool create)
     }
     else
     {
-      off_t i, j;
       off_t t1_s = byte_to_t1(inode->data.length);
       off_t t2_s = byte_to_t2(inode->data.length);
       off_t t1_t = byte_to_t1(pos);
       off_t t2_t = byte_to_t2(pos);
 
       cache_read(inode->data.table, t1);
-      for (i = t1_s; i <= t1_t; i++)
+      for (off_t i = t1_s; i <= t1_t; i++)
       {
         off_t l = (i == t1_s ? t2_s : 0);
         off_t r = (i == t1_t ? t2_t : TABLE_SIZE - 1);
@@ -98,7 +97,7 @@ byte_to_sector(struct inode *inode, off_t pos, bool create)
         }
 
         cache_read(t1[i], t2);
-        for (j = l; j <= r; j++)
+        for (off_t j = l; j <= r; j++)
         {
           if (t2[j] == -1)
           {
@@ -174,12 +173,11 @@ bool inode_create(block_sector_t sector, off_t length)
         block_sector_t *t1 = calloc(TABLE_SIZE, sizeof *t1);
         block_sector_t *t2 = calloc(TABLE_SIZE, sizeof *t2);
 
-        int i, j;
         off_t t1_t = byte_to_t1(length - 1);
         off_t t2_t = byte_to_t2(length - 1);
 
         cache_read(disk_inode->table, t1);
-        for (i = 0; i <= t1_t; i++)
+        for (off_t i = 0; i <= t1_t; i++)
         {
           off_t r = (i == t1_t ? t2_t : TABLE_SIZE - 1);
 
@@ -193,7 +191,7 @@ bool inode_create(block_sector_t sector, off_t length)
           cache_write(t1[i], empty);
 
           cache_read(t1[i], t2);
-          for (j = 0; j <= r; j++)
+          for (off_t j = 0; j <= r; j++)
           {
             if (!free_map_allocate(1, &t2[j]))
             {
@@ -297,17 +295,16 @@ void inode_close(struct inode *inode)
         block_sector_t *t1 = calloc(TABLE_SIZE, sizeof *t1);
         block_sector_t *t2 = calloc(TABLE_SIZE, sizeof *t2);
 
-        int i, j;
         off_t t1_t = byte_to_t1(length - 1);
         off_t t2_t = byte_to_t2(length - 1);
 
         cache_read(inode->data.table, t1);
-        for (i = 0; i <= t1_t; i++)
+        for (off_t i = 0; i <= t1_t; i++)
         {
           off_t r = (i == t1_t ? t2_t : TABLE_SIZE - 1);
 
           cache_read(t1[i], t2);
-          for (j = 0; j <= r; j++)
+          for (off_t j = 0; j <= r; j++)
           {
             free_map_release(t2[j], 1);
           }

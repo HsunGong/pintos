@@ -144,7 +144,7 @@ void filesys_init(bool format)
 void filesys_done(void)
 {
   free_map_close();
-  cache_done();
+  cache_finish();
 }
 
 /* Creates a file named NAME with the given INITIAL_SIZE.

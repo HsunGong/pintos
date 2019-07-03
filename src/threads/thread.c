@@ -803,7 +803,7 @@ static void thread_ready_list_greater(void)
   list_sort(&ready_list, thread_priority_greater, NULL);
 }
 
-void thread_ticker(bool full_second)
+void thread_timer(bool full_second)
 {
   if (thread_mlfqs)
   {
