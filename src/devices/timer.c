@@ -168,7 +168,7 @@ timer_interrupt(struct intr_frame *args UNUSED)
   ticks++;
   thread_tick();
 
-  thread_ticker(timer_ticks() % TIMER_FREQ == 0);
+  thread_timer(timer_ticks() % TIMER_FREQ == 0);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

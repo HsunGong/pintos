@@ -181,7 +181,7 @@ int thread_get_load_avg(void);
 
 
 
-void thread_ticker(bool);
+void thread_timer(bool);
 
 int thread_get_certain_priority(const struct thread *t);
 

@@ -8,15 +8,6 @@
 
 #define CACHE_SIZE 64
 
-struct cache_block
-{
-  unsigned char buf[BLOCK_SECTOR_SIZE];
-  block_sector_t sector_idx;
-  int accessed;
-  bool dirty;
-  bool used;
-};
-
 int cache_get_free_cache(void);
 
 static struct cache_block cache[CACHE_SIZE];
@@ -68,6 +59,22 @@ void cache_init()
     //lock_init (&locks_cache[i]);
   }
 }
+
+void cache_finish()
+{
+  lock_acquire(&lock_cache_all);
+  for (int i = 0; i < CACHE_SIZE; ++i)
+    if (cache[i].used && cache[i].dirty)
+    {
+      //lock_acquire (&locks_cache[i]);
+      block_write(fs_device, cache[i].sector_idx, cache[i].buf);
+      cache[i].used = false;
+      //lock_release (&locks_cache[i]);
+      --cnt_used;
+    }
+  lock_release(&lock_cache_all);
+}
+
 
 void cache_read(block_sector_t sector, void *buffer)
 {
@@ -126,20 +133,5 @@ void cache_write(block_sector_t sector, const void *buffer)
   cache[index].accessed = 1;
   memcpy(cache[index].buf, buffer, BLOCK_SECTOR_SIZE);
   //lock_release (&locks_cache[index]);
-  lock_release(&lock_cache_all);
-}
-
-void cache_done()
-{
-  lock_acquire(&lock_cache_all);
-  for (int i = 0; i < CACHE_SIZE; ++i)
-    if (cache[i].used && cache[i].dirty)
-    {
-      //lock_acquire (&locks_cache[i]);
-      block_write(fs_device, cache[i].sector_idx, cache[i].buf);
-      cache[i].used = false;
-      //lock_release (&locks_cache[i]);
-      --cnt_used;
-    }
   lock_release(&lock_cache_all);
 }
